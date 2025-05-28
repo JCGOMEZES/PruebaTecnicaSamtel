@@ -1,0 +1,315 @@
+# Global configuration
+global:
+  imageRegistry: docker.io
+  storageClass: default
+  namespace: voting-app
+
+# Application images
+images:
+  vote:
+    repository: voting-app-vote
+    tag: latest
+    pullPolicy: Always
+  result:
+    repository: voting-app-result
+    tag: latest
+    pullPolicy: Always
+  worker:
+    repository: voting-app-worker
+    tag: latest
+    pullPolicy: Always
+
+# Image pull secrets
+imagePullSecrets: []
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 2000
+
+# Security context
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Vote application configuration
+vote:
+  enabled: true
+  replicaCount: 2
+  
+  image:
+    repository: voting-app-vote
+    tag: latest
+    pullPolicy: Always
+  
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 80
+  
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  
+  livenessProbe:
+    httpGet:
+      path: /
+      port: 80
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 80
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  
+  env:
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+    OPTION_A: Cats
+    OPTION_B: Dogs
+
+# Result application configuration
+result:
+  enabled: true
+  replicaCount: 2
+  
+  image:
+    repository: voting-app-result
+    tag: latest
+    pullPolicy: Always
+  
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 80
+  
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  
+  livenessProbe:
+    httpGet:
+      path: /
+      port: 80
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 80
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  
+  env:
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: postgres
+
+# Worker application configuration
+worker:
+  enabled: true
+  replicaCount: 1
+  
+  image:
+    repository: voting-app-worker
+    tag: latest
+    pullPolicy: Always
+  
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  
+  env:
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: postgres
+
+# Redis configuration
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: alpine
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 6379
+  
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
+  
+  livenessProbe:
+    tcpSocket:
+      port: 6379
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  
+  readinessProbe:
+    tcpSocket:
+      port: 6379
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+# PostgreSQL configuration
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "13"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 5432
+  
+  resources:
+    limits:
+      cpu: 200m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+  
+  auth:
+    username: postgres
+    password: postgres
+    database: postgres
+  
+  livenessProbe:
+    exec:
+      command:
+        - pg_isready
+        - -U
+        - postgres
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  
+  readinessProbe:
+    exec:
+      command:
+        - pg_isready
+        - -U
+        - postgres
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/rate-limit-connections: "10"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+  
+  hosts:
+    - host: vote.local
+      paths:
+        - path: /
+          pathType: Prefix
+          service: vote
+    - host: result.local
+      paths:
+        - path: /
+          pathType: Prefix
+          service: result
+  
+  tls: []
+
+# Autoscaling configuration
+autoscaling:
+  vote:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+  
+  result:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+
+# Monitoring configuration
+monitoring:
+  enabled: false
+  serviceMonitor:
+    enabled: false
+    namespace: monitoring
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Network policies
+networkPolicy:
+  enabled: false
+  ingress: []
+  egress: []
+
+# Pod disruption budget
+podDisruptionBudget:
+  vote:
+    enabled: true
+    minAvailable: 1
+  result:
+    enabled: true
+    minAvailable: 1
+
+---

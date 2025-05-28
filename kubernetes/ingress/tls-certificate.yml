@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: voting-app-tls
+  namespace: voting-app
+type: kubernetes.io/tls
+data:
+  # Self-signed certificate for development
+  # In production, use proper certificates from Let's Encrypt or CA
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t...
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t...
+---
