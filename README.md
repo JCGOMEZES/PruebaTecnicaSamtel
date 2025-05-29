@@ -230,3 +230,17 @@ Stage 4: Kubernetes Deployment
 - Infrastructure Validation: Verificación del cluster
 - Deploy Applications: Despliegue de microservicios
 - Configure Ingress: Configuración de acceso externo
+
+SonarQube Integration
+![Sonarqube](image-2.png)
+
+Análisis de Código
+![Analisis](image-1.png)
+
+Análisis de Código con error
+![analisis con error](image-3.png)
+
+Análisis de Código sin error
+![analisis sin error](image-4.png)
+
+![sonarqube sin error](image-5.png)
