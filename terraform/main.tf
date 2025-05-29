@@ -128,14 +128,11 @@ resource "azurerm_kubernetes_cluster" "aks" {
     node_count          = var.node_count
     vm_size             = var.node_vm_size
     type                = "VirtualMachineScaleSets"
-    availability_zones  = ["1", "2", "3"]
-    enable_auto_scaling = true
-    min_count          = var.min_node_count
-    max_count          = var.max_node_count
-    
-    vnet_subnet_id = azurerm_subnet.aks.id
+    zones               = ["1", "2", "3"]
+    vnet_subnet_id      = azurerm_subnet.aks.id
     
     upgrade_settings {
       max_surge = "10%"
     }
   }
+}

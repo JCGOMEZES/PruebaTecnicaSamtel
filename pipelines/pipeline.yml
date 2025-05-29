@@ -1,0 +1,659 @@
+# ====================================
+# AZURE DEVOPS PIPELINE - PRUEBA TÉCNICA SAMTEL
+# Archivo: azure-pipelines.yml
+# ====================================
+# Pipeline completo para aplicación de votación con:
+# - Análisis SonarQube (escenarios éxito/fallo)
+# - Build y push de imágenes Docker
+# - Scripts paralelos (Hello World + crear archivos)
+# - Despliegue en Kubernetes
+# - Configuración de Ingress
+
+name: VotingApp-CI-CD-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - src/*
+      - kubernetes/*
+      - pipelines/*
+    exclude:
+      - docs/*
+      - README.md
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/*
+
+# ------------------------------------
+# VARIABLES GLOBALES
+# ------------------------------------
+variables:  
+  # Build Configuration
+  buildConfiguration: 'Release'
+  vmImageName: 'ubuntu-latest'
+  
+  # Docker Configuration
+  dockerRegistryServiceConnection: 'dockerhub-connection'         
+  imageRepository: 'juanCamiloDevOps/voting-app'                   
+  containerRegistry: 'docker.io'                                 
+  dockerfilePath: '$(Build.SourcesDirectory)/src'
+  tag: '$(Build.BuildId)'
+  
+  # SonarQube Configuration
+  sonarQubeServiceConnection: 'sonarqube-connection'              # CAMBIAR: Nombre de tu service connection SonarQube
+  sonarQubeProjectKey: 'prueba-tecnica-samtel'                   # CAMBIAR: Key de tu proyecto en SonarQube
+  sonarQubeProjectName: 'Prueba Técnica Samtel - Voting App'     # CAMBIAR: Nombre de tu proyecto
+  
+  # Kubernetes Configuration
+  kubernetesServiceConnection: 'kubernetes-connection'            # CAMBIAR: Nombre de tu service connection K8s
+  kubernetesNamespace: 'voting-app'                             
+  
+  # Application Configuration
+  voteAppName: 'vote-app'
+  resultAppName: 'result-app'
+  workerAppName: 'worker-app'
+  
+  # Environment Variables
+  ENVIRONMENT: 'production'
+  CLUSTER_NAME: 'aks-voting-app'                                  # CAMBIAR: Nombre de tu cluster
+
+# ------------------------------------
+# STAGE 1: BUILD AND ANALYZE
+# ------------------------------------
+stages:
+- stage: BuildAndAnalyze
+  displayName: 'Build and Code Analysis'
+  jobs:
+  
+  # --------------------------------------
+  # JOB: SONARQUBE CODE ANALYSIS
+  # --------------------------------------
+  - job: SonarQubeAnalysis
+    displayName: 'SonarQube Code Quality Analysis'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - checkout: self
+      fetchDepth: 0
+      displayName: 'Checkout Source Code'
+      
+    # Preparar análisis SonarQube
+    - task: SonarQubePrepare@5
+      displayName: 'Prepare SonarQube Analysis Configuration'
+      inputs:
+        SonarQube: $(sonarQubeServiceConnection)
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: $(sonarQubeProjectKey)
+        cliProjectName: $(sonarQubeProjectName)
+        cliProjectVersion: '$(Build.BuildNumber)'
+        cliSources: 'src'
+        extraProperties: |
+          sonar.exclusions=**/node_modules/**,**/*.spec.ts,**/*.test.js,**/bin/**,**/obj/**
+          sonar.coverage.exclusions=**/node_modules/**,**/test/**,**/tests/**
+          sonar.javascript.lcov.reportPaths=src/result/coverage/lcov.info
+          sonar.python.coverage.reportPaths=src/vote/coverage.xml
+          sonar.cs.opencover.reportsPaths=src/worker/coverage.opencover.xml
+          sonar.qualitygate.wait=true
+          # Configuración para diferentes escenarios
+          sonar.coverage.minimum=80
+          sonar.duplicated_lines_density.maximum=3
+    
+    # Instalar dependencias y ejecutar tests Python (Vote App)
+    - script: |
+        echo "=== Configurando aplicación Vote (Python) ==="
+        cd src/vote
+        
+        # Instalar dependencias
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov flake8
+        
+        echo "=== Ejecutando tests con cobertura ==="
+        python -m pytest --cov=. --cov-report=xml --cov-report=html --junitxml=test-results.xml || true
+        
+        echo "=== Análisis de calidad de código Python ==="
+        flake8 . --max-line-length=88 --extend-ignore=E203,W503 --exclude=__pycache__,.pytest_cache || true
+        
+        echo "=== Vote App análisis completado ==="
+      displayName: 'Python Vote App - Tests and Coverage'
+      continueOnError: true
+    
+    # Instalar dependencias y ejecutar tests Node.js (Result App)
+    - script: |
+        echo "=== Configurando aplicación Result (Node.js) ==="
+        cd src/result
+        
+        # Verificar si existe package.json, si no, crear uno básico
+        if [ ! -f package.json ]; then
+          echo "Creando package.json básico..."
+          cat > package.json << 'EOF'
+        {
+          "name": "result-app",
+          "version": "1.0.0",
+          "description": "Voting results application",
+          "main": "server.js",
+          "scripts": {
+            "test": "jest --coverage --coverageReporters=lcov --coverageReporters=json",
+            "start": "node server.js"
+          },
+          "dependencies": {
+            "express": "^4.18.0",
+            "socket.io": "^4.6.0",
+            "pg": "^8.8.0"
+          },
+          "devDependencies": {
+            "jest": "^29.0.0",
+            "supertest": "^6.3.0"
+          },
+          "jest": {
+            "testEnvironment": "node",
+            "coverageDirectory": "coverage",
+            "collectCoverageFrom": [
+              "*.js",
+              "!node_modules/**"
+            ]
+          }
+        }
+        EOF
+        fi
+        
+        # Instalar dependencias
+        npm install
+        
+        echo "=== Ejecutando tests Node.js ==="
+        npm test || true
+        
+        echo "=== Result App análisis completado ==="
+      displayName: 'Node.js Result App - Tests and Coverage'
+      continueOnError: true
+    
+    # Compilar y testear aplicación .NET (Worker)
+    - script: |
+        echo "=== Configurando aplicación Worker (.NET) ==="
+        cd src/worker
+        
+        # Restaurar dependencias
+        dotnet restore
+        
+        echo "=== Compilando aplicación .NET ==="
+        dotnet build --configuration $(buildConfiguration) --no-restore
+        
+        echo "=== Ejecutando tests .NET ==="
+        dotnet test --configuration $(buildConfiguration) --no-build --verbosity normal --collect:"XPlat Code Coverage" || true
+        
+        echo "=== Worker App análisis completado ==="
+      displayName: '.NET Worker App - Build and Test'
+      continueOnError: true
+    
+    # Ejecutar análisis SonarQube
+    - task: SonarQubeAnalyze@5
+      displayName: 'Execute SonarQube Code Analysis'
+      
+    # Publicar resultados SonarQube
+    - task: SonarQubePublish@5
+      displayName: 'Publish SonarQube Quality Gate Results'
+      inputs:
+        pollingTimeoutSec: '300'
+    
+    # Publicar resultados de tests
+    - task: PublishTestResults@2
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/test-results.xml'
+        failTaskOnFailedTests: false
+        testRunTitle: 'Unit Tests Results'
+      displayName: 'Publish Test Results'
+    
+    # Publicar cobertura de código
+    - task: PublishCodeCoverageResults@1
+      condition: succeededOrFailed()
+      inputs:
+        codeCoverageTool: 'Cobertura'
+        summaryFileLocation: '**/coverage.xml'
+        reportDirectory: '**/htmlcov'
+        failIfCoverageEmpty: false
+      displayName: 'Publish Code Coverage Results'
+
+  # -------------------------------------
+  # JOB: BUILD DOCKER IMAGES
+  # -------------------------------------
+  - job: BuildDockerImages
+    displayName: 'Build Docker Images'
+    dependsOn: SonarQubeAnalysis
+    condition: or(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - checkout: self
+      displayName: 'Checkout Source Code'
+      
+    # Login a Docker Registry
+    - task: Docker@2
+      displayName: 'Login to Docker Registry'
+      inputs:
+        containerRegistry: $(dockerRegistryServiceConnection)
+        command: 'login'
+    
+    # Build Vote App Docker Image
+    - task: Docker@2
+      displayName: 'Build Vote App Docker Image'
+      inputs:
+        containerRegistry: $(dockerRegistryServiceConnection)
+        repository: '$(imageRepository)-vote'
+        command: 'build'
+        Dockerfile: 'src/vote/Dockerfile'
+        buildContext: 'src/vote'
+        tags: |
+          $(tag)
+          latest
+        arguments: '--no-cache'
+    
+    # Build Result App Docker Image
+    - task: Docker@2
+      displayName: 'Build Result App Docker Image'
+      inputs:
+        containerRegistry: $(dockerRegistryServiceConnection)
+        repository: '$(imageRepository)-result'
+        command: 'build'
+        Dockerfile: 'src/result/Dockerfile'
+        buildContext: 'src/result'
+        tags: |
+          $(tag)
+          latest
+        arguments: '--no-cache'
+    
+    # Build Worker App Docker Image
+    - task: Docker@2
+      displayName: 'Build Worker App Docker Image'
+      inputs:
+        containerRegistry: $(dockerRegistryServiceConnection)
+        repository: '$(imageRepository)-worker'
+        command: 'build'
+        Dockerfile: 'src/worker/Dockerfile'
+        buildContext: 'src/worker'
+        tags: |
+          $(tag)
+          latest
+        arguments: '--no-cache'
+    
+    # Verificar imágenes construidas
+    - script: |
+        echo "=== Verificando imágenes Docker construidas ==="
+        docker images | grep "$(imageRepository)"
+        
+        echo "=== Información de las imágenes ==="
+        docker inspect $(imageRepository)-vote:$(tag) --format='{{.Size}}' || true
+        docker inspect $(imageRepository)-result:$(tag) --format='{{.Size}}' || true
+        docker inspect $(imageRepository)-worker:$(tag) --format='{{.Size}}' || true
+      displayName: 'Verify Built Images'
+
+# ------------------------------------
+# STAGE 2: PARALLEL JOBS (REQUERIMIENTO)
+# ------------------------------------
+- stage: ParallelJobsExecution
+  displayName: 'Parallel Jobs - Hello World & File Creation'
+  dependsOn: BuildAndAnalyze
+  condition: succeeded()
+  jobs:
+  
+  # ------------------------------------
+  # JOB A: HELLO WORLD 10 VECES
+  # ------------------------------------
+  - job: HelloWorldParallelJob
+    displayName: 'Hello World - 10 veces (Paralelo)'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - bash: |
+        echo "========================================"
+        echo "INICIANDO HELLO WORLD JOB PARALELO"
+        echo "========================================"
+        echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Build ID: $(Build.BuildId)"
+        echo "Build Number: $(Build.BuildNumber)"
+        echo ""
+        
+        echo "=== Ejecutando Hello World 10 veces ==="
+        for i in {1..10}
+        do
+          timestamp=$(date '+%H:%M:%S')
+          echo "[$timestamp] Hello World - Iteración $i de 10"
+          sleep 1
+        done
+        
+        echo ""
+        echo "========================================"
+        echo "HELLO WORLD JOB COMPLETADO EXITOSAMENTE"
+        echo "========================================"
+        echo "Finalizado a las: $(date '+%Y-%m-%d %H:%M:%S')"
+      displayName: 'Execute Hello World Script (10 iterations)'
+  
+  # ====================================
+  # JOB B: CREAR 10 ARCHIVOS CON FECHA
+  # ====================================
+  - job: CreateFilesParallelJob
+    displayName: 'Crear 10 archivos con fecha (Paralelo)'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - bash: |
+        echo "========================================"
+        echo "INICIANDO CREATE FILES JOB PARALELO"
+        echo "========================================"
+        echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Build ID: $(Build.BuildId)"
+        echo "Agent: $(Agent.Name)"
+        echo ""
+        
+        echo "=== Creando directorio temporal ==="
+        mkdir -p temp-files
+        cd temp-files
+        
+        echo "=== Creando 10 archivos con fecha ==="
+        for i in {1..10}
+        do
+          timestamp=$(date +"%Y%m%d_%H%M%S")
+          filename="file_${i}_${timestamp}.txt"
+          
+          # Crear contenido del archivo
+          cat > "$filename" << EOF
+        ====================================
+        ARCHIVO GENERADO POR AZURE DEVOPS
+        ====================================
+        
+        Información del Archivo:
+        - Nombre: $filename
+        - Número: $i de 10
+        - Creado: $(date '+%Y-%m-%d %H:%M:%S')
+        - Zona horaria: $(date '+%Z')
+        
+        Información del Build:
+        - Build ID: $(Build.BuildId)
+        - Build Number: $(Build.BuildNumber)
+        - Branch: $(Build.SourceBranchName)
+        - Commit: $(Build.SourceVersion)
+        
+        Información del Agente:
+        - Agent Name: $(Agent.Name)
+        - Agent OS: $(Agent.OS)
+        - Job Name: $(Agent.JobName)
+        
+        Información del Pipeline:
+        - Pipeline Name: $(Build.DefinitionName)
+        - Repository: $(Build.Repository.Name)
+        - Requested For: $(Build.RequestedFor)
+        
+        ====================================
+        ARCHIVO $i COMPLETADO
+        ====================================
+        EOF
+          
+          echo "[$i/10] Creado archivo: $filename"
+          sleep 1
+        done
+        
+        echo ""
+        echo "=== LISTADO DE ARCHIVOS CREADOS ==="
+        ls -la *.txt | while read -r line; do
+          echo " $line"
+        done
+        
+        echo ""
+        echo "=== ESTADÍSTICAS DE ARCHIVOS ==="
+        echo "Total de archivos: $(ls -1 *.txt | wc -l)"
+        echo "Tamaño total: $(du -sh . | cut -f1)"
+        
+        echo ""
+        echo "=== CONTENIDO DE LOS PRIMEROS 3 ARCHIVOS ==="
+        for file in $(ls *.txt | head -3); do
+          echo ""
+          echo "--- CONTENIDO DE $file ---"
+          cat "$file"
+          echo "--- FIN DE $file ---"
+        done
+        
+        echo ""
+        echo "========================================"
+        echo "CREATE FILES JOB COMPLETADO EXITOSAMENTE"
+        echo "========================================"
+        echo "Archivos creados: $(ls -1 *.txt | wc -l)"
+        echo "Finalizado a las: $(date '+%Y-%m-%d %H:%M:%S')"
+      displayName: 'Execute Create Files Script (10 files with timestamps)'
+    
+    # Publicar archivos como artefactos
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: 'temp-files'
+        ArtifactName: 'generated-files-$(Build.BuildId)'
+        publishLocation: 'Container'
+      displayName: 'Publish Generated Files as Artifacts'
+
+# ------------------------------------
+# STAGE 3: DOCKER PUSH
+# ------------------------------------
+- stage: DockerPushStage
+  displayName: 'Push Docker Images to Registry'
+  dependsOn: ParallelJobsExecution
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: PushDockerImages
+    displayName: 'Push Images to Docker Hub'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - checkout: self
+      displayName: 'Checkout Source Code'
+      
+    # Login a Docker Registry
+    - task: Docker@2
+      displayName: 'Login to Docker Registry'
+      inputs:
+        containerRegistry: $(dockerRegistryServiceConnection)
+        command: 'login'
+    
+    # Build y Push Vote App
+    - task: Docker@2
+      displayName: 'Build and Push Vote App Image'
+      inputs:
+        containerRegistry: $(dockerRegistryServiceConnection)
+        repository: '$(imageRepository)-vote'
+        command: 'buildAndPush'
+        Dockerfile: 'src/vote/Dockerfile'
+        buildContext: 'src/vote'
+        tags: |
+          $(tag)
+          latest
+    
+    # Build y Push Result App
+    - task: Docker@2
+      displayName: 'Build and Push Result App Image'
+      inputs:
+        containerRegistry: $(dockerRegistryServiceConnection)
+        repository: '$(imageRepository)-result'
+        command: 'buildAndPush'
+        Dockerfile: 'src/result/Dockerfile'
+        buildContext: 'src/result'
+        tags: |
+          $(tag)
+          latest
+    
+    # Build y Push Worker App
+    - task: Docker@2
+      displayName: 'Build and Push Worker App Image'
+      inputs:
+        containerRegistry: $(dockerRegistryServiceConnection)
+        repository: '$(imageRepository)-worker'
+        command: 'buildAndPush'
+        Dockerfile: 'src/worker/Dockerfile'
+        buildContext: 'src/worker'
+        tags: |
+          $(tag)
+          latest
+    
+    # Verificar imágenes en registry
+    - script: |
+        echo "=== VERIFICANDO IMÁGENES EN DOCKER REGISTRY ==="
+        echo "Registry: $(containerRegistry)"
+        echo "Repository: $(imageRepository)"
+        echo "Tag: $(tag)"
+        echo ""
+        echo "Imágenes publicadas:"
+        echo "- $(containerRegistry)/$(imageRepository)-vote:$(tag)"
+        echo "- $(containerRegistry)/$(imageRepository)-result:$(tag)"
+        echo "- $(containerRegistry)/$(imageRepository)-worker:$(tag)"
+        echo ""
+        echo "También disponibles con tag 'latest':"
+        echo "- $(containerRegistry)/$(imageRepository)-vote:latest"
+        echo "- $(containerRegistry)/$(imageRepository)-result:latest"
+        echo "- $(containerRegistry)/$(imageRepository)-worker:latest"
+        
+        # Verificar que las imágenes se subieron correctamente
+        docker manifest inspect $(imageRepository)-vote:$(tag) > /dev/null && echo " Vote image verified" || echo " Vote image failed"
+        docker manifest inspect $(imageRepository)-result:$(tag) > /dev/null && echo " Result image verified" || echo " Result image failed"
+        docker manifest inspect $(imageRepository)-worker:$(tag) > /dev/null && echo " Worker image verified" || echo " Worker image failed"
+      displayName: 'Verify Images in Registry'
+
+# ------------------------------------
+# STAGE 4: KUBERNETES DEPLOYMENT
+# -------------------------------------
+- stage: KubernetesDeployment
+  displayName: 'Deploy to Kubernetes Cluster'
+  dependsOn: DockerPushStage
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployToKubernetes
+    displayName: 'Deploy Voting App to Kubernetes'
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'production.voting-app'                       # Crear environment en Azure DevOps
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            displayName: 'Checkout Source Code'
+          
+          # Crear namespace si no existe
+          - task: KubernetesManifest@0
+            displayName: 'Create/Update Namespace'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              namespace: $(kubernetesNamespace)
+              manifests: 'kubernetes/environment/namespace.yaml'
+          
+          # Aplicar ConfigMaps y Secrets
+          - task: KubernetesManifest@0
+            displayName: 'Deploy ConfigMaps and Secrets'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              namespace: $(kubernetesNamespace)
+              manifests: |
+                kubernetes/environment/configmap.yaml
+                kubernetes/environment/secrets.yaml
+          
+          # Desplegar servicios de base de datos
+          - task: KubernetesManifest@0
+            displayName: 'Deploy Database Services (Redis & PostgreSQL)'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              namespace: $(kubernetesNamespace)
+              manifests: |
+                kubernetes/environment/redis-deployment.yaml
+                kubernetes/environment/postgres-deployment.yaml
+          
+          # Esperar a que las bases de datos estén listas
+          - script: |
+              echo "=== Esperando a que Redis esté listo ==="
+              kubectl wait --for=condition=ready pod -l app=redis -n $(kubernetesNamespace) --timeout=120s
+              
+              echo "=== Esperando a que PostgreSQL esté listo ==="
+              kubectl wait --for=condition=ready pod -l app=postgres -n $(kubernetesNamespace) --timeout=180s
+              
+              echo "=== Verificando conectividad de bases de datos ==="
+              kubectl get pods -n $(kubernetesNamespace) -l app=redis
+              kubectl get pods -n $(kubernetesNamespace) -l app=postgres
+            displayName: 'Wait for Database Services'
+          
+          # Desplegar aplicaciones principales
+          - task: KubernetesManifest@0
+            displayName: 'Deploy Application Services'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              namespace: $(kubernetesNamespace)
+              manifests: |
+                kubernetes/environment/vote-deployment.yaml
+                kubernetes/environment/result-deployment.yaml
+                kubernetes/environment/worker-deployment.yaml
+              containers: |
+                $(imageRepository)-vote:$(tag)
+                $(imageRepository)-result:$(tag)
+                $(imageRepository)-worker:$(tag)
+          
+          # Desplegar Ingress para acceso externo
+          - task: KubernetesManifest@0
+            displayName: 'Deploy Ingress Controller Configuration'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              namespace: $(kubernetesNamespace)
+              manifests: 'kubernetes/ingress/ingress.yaml'
+          
+          # Verificar estado del despliegue
+          - script: |
+              echo "========================================"
+              echo "VERIFICANDO ESTADO DEL DESPLIEGUE"
+              echo "========================================"
+              echo "Namespace: $(kubernetesNamespace)"
+              echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+              echo ""
+              
+              echo "=== Estado de los Pods ==="
+              kubectl get pods -n $(kubernetesNamespace) -o wide
+              echo ""
+              
+              echo "=== Estado de los Servicios ==="
+              kubectl get services -n $(kubernetesNamespace)
+              echo ""
+              
+              echo "=== Estado del Ingress ==="
+              kubectl get ingress -n $(kubernetesNamespace)
+              echo ""
+              
+              echo "=== Esperando que todas las aplicaciones estén listas ==="
+              kubectl wait --for=condition=ready pod -l app=vote -n $(kubernetesNamespace) --timeout=300s
+              kubectl wait --for=condition=ready pod -l app=result -n $(kubernetesNamespace) --timeout=300s
+              kubectl wait --for=condition=ready pod -l app=worker -n $(kubernetesNamespace) --timeout=300s
+              
+              echo ""
+              echo "=== Verificando endpoints de servicios ==="
+              kubectl get endpoints -n $(kubernetesNamespace)
+              
+              echo ""
+              echo "=== Logs recientes de las aplicaciones ==="
+              echo "--- Vote App Logs ---"
+              kubectl logs -l app=vote -n $(kubernetesNamespace) --tail=5 || true
+              echo "--- Result App Logs ---"
+              kubectl logs -l app=result -n $(kubernetesNamespace) --tail=5 || true
+              echo "--- Worker App Logs ---"
+              kubectl logs -l app=worker -n $(kubernetesNamespace) --tail=5 || true
+              
+              echo ""
+              echo "========================================"
+              echo "VERIFICACIÓN DE DESPLIEGUE COMPLETADA"
+              echo "========================================"
+            displayName: 'Verify Kubernetes Deployment Status'
