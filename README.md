@@ -37,7 +37,7 @@ Los usuarios pueden votar entre dos opciones (por ejemplo: Gatos vs Perros) y ve
 Arquitectura
 Diagrama de Arquitectura:
 
-![arquitectura](image-1.png)
+![arquitectura](image.png)
 
 Componentes de la Aplicación
 ComponenteTecnologíaPuertoDescripciónVote AppPython/Flask80Frontend para votar entre dos opcionesResult AppNode.js/Express80Frontend para mostrar resultados en tiempo realWorker.NET Core-Procesa votos y actualiza la base de datosRedisRedis6379Cola de mensajes para almacenar votos temporalmentePostgreSQLPostgreSQL5432Base de datos principal para resultados
